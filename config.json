@@ -7,7 +7,7 @@
   },
   "test_path": "/",
   "timeout": 2,
-  "max_workers": 1500,
+  "max_workers": 400,
   "test_download": true,
   "download_size": 102400,
   "port": 443,

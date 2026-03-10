@@ -25,6 +25,24 @@ if sys.platform == 'win32':
     socket.setdefaulttimeout(5)
 
 
+def get_safe_max_workers(requested: int) -> int:
+    """Cap max_workers to a safe limit based on OS thread constraints"""
+    # On Linux, read the system thread limit and leave headroom for the OS
+    if sys.platform.startswith('linux'):
+        try:
+            with open('/proc/sys/kernel/threads-max', 'r') as f:
+                system_max = int(f.read().strip())
+            # Use at most 60% of the system thread limit, capped at 500
+            safe_limit = min(int(system_max * 0.6), 500)
+        except Exception:
+            safe_limit = 400
+        if requested > safe_limit:
+            print(f"⚠ Reducing max_workers from {requested} to {safe_limit} (Linux thread limit)")
+        return min(requested, safe_limit)
+    # On macOS/Windows allow higher counts
+    return min(requested, 1000)
+
+
 CDN_PROVIDERS = {
     "cloudflare": {
         "name": "Cloudflare",
@@ -125,7 +143,7 @@ class CDNScanner:
 
         self.test_path = config.get('test_path', '/')
         self.timeout = config.get('timeout', 3)
-        self.max_workers = config.get('max_workers', 100)
+        self.max_workers = get_safe_max_workers(config.get('max_workers', 200))
         self.test_download = config.get('test_download', True)
         self.download_size = config.get('download_size', 1024 * 100)
         self.port = config.get('port', 443)
@@ -349,6 +367,24 @@ class CDNScanner:
 
         return all_ips
 
+    def _run_executor(self, ip_list: List[str], workers: int):
+        """Run the thread pool executor with the given worker count"""
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(self.scan_ip, ip): ip for ip in ip_list}
+            try:
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+            except KeyboardInterrupt:
+                print("\n\n⚠ Scan interrupted by user! Stopping gracefully...")
+                self.stop_scan = True
+                for future in futures:
+                    future.cancel()
+                executor.shutdown(wait=True, cancel_futures=True)
+                raise
+
     def scan_subnets(self, subnets: List[str]) -> List[Dict]:
         """Scan multiple subnets concurrently"""
         print(f"\n{'='*60}")
@@ -379,26 +415,21 @@ class CDNScanner:
 
         start_time = time.time()
 
-        try:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {executor.submit(self.scan_ip, ip): ip for ip in ip_list}
-
-                try:
-                    for future in as_completed(futures):
-                        try:
-                            future.result()
-                        except Exception:
-                            pass
-                except KeyboardInterrupt:
-                    print("\n\n⚠ Scan interrupted by user! Stopping gracefully...")
-                    self.stop_scan = True
-                    for future in futures:
-                        future.cancel()
-                    executor.shutdown(wait=True, cancel_futures=True)
+        workers = self.max_workers
+        while workers >= 50:
+            try:
+                self._run_executor(ip_list, workers)
+                break
+            except RuntimeError as e:
+                if "can't start new thread" in str(e):
+                    workers = workers // 2
+                    print(f"⚠ Thread limit hit — retrying with {workers} workers...")
+                    self.tested_count = 0
+                    self.results = []
+                    self.stop_scan = False
+                    self.clear_output_file()
+                else:
                     raise
-
-        except KeyboardInterrupt:
-            pass
 
         end_time = time.time()
         elapsed = end_time - start_time
