@@ -561,6 +561,35 @@ def run_scan_for_cdn(cdn_provider: str, config: Dict, is_all_mode: bool = False)
     return results
 
 
+def ask_cdn_choice() -> str:
+    """Interactively ask the user which CDN to scan"""
+    menu = """
+╔══════════════════════════════════════╗
+║       CDN Scanner - Select Target    ║
+╠══════════════════════════════════════╣
+║  1.  Cloudflare                      ║
+║  2.  Amazon CloudFront               ║
+║  3.  Fastly                          ║
+║  4.  All (Cloudflare + CloudFront    ║
+║          + Fastly)                   ║
+╚══════════════════════════════════════╝"""
+    cdn_map = {
+        '1': 'cloudflare',
+        '2': 'cloudfront',
+        '3': 'fastly',
+        '4': 'all',
+    }
+    print(menu)
+    while True:
+        try:
+            choice = input("Enter your choice (1-4): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise KeyboardInterrupt
+        if choice in cdn_map:
+            return cdn_map[choice]
+        print("  Invalid choice. Please enter 1, 2, 3, or 4.")
+
+
 def main():
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -591,7 +620,7 @@ def main():
         print("Default config.json created. Please edit and run again.")
         return
 
-    cdn = config.get('cdn', 'cloudflare').lower()
+    cdn = ask_cdn_choice()
 
     if cdn == 'all':
         print("="*60)
